@@ -43,6 +43,7 @@ macro_rules! UART_CONFIG {
     () => {
         Config {
             baudrate: 115200.bps(),
+            // baudrate: 74880.bps(),
             parity: longan_nano::hal::serial::Parity::ParityNone,
             stopbits: longan_nano::hal::serial::StopBits::STOP1,
         }
@@ -146,15 +147,50 @@ fn main() -> ! {
     let mut delay = McycleDelay::new(&rcu.clocks);
 
     loop {
+        // Clear screen
+        Rectangle::new(Point::new(0, 0), Size::new(width as u32, height as u32))
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(&mut lcd)
+            .unwrap();
         tx.write_str("AT+RST\r").unwrap();
-        Text::new("0", Point::new(10, 10), style)
-            .draw(&mut lcd)
-            .unwrap();
+        // Text::new("start", Point::new(10, 10), style)
+        //     .draw(&mut lcd)
+        //     .unwrap();
+        
+        let mut data = ' ';
+        let mut str_d = heapless::String::<32>::new();
+        while data != '\r' {
+            match rx.read() {
+                Ok(v) => {
+                    let v = [v];
+                    let s = from_utf8(&v).unwrap();
+                    str_d.push_str(s).unwrap();
+                    data = s.chars().nth(0).unwrap();
+                },
+                Err(e) => {
+                    match e {
+                        nb::Error::Other(e) => match e {
+                            Error::Framing => str_d.push_str("Framing").unwrap(),
+                            Error::Noise => str_d.push_str("Noise").unwrap(),
+                            Error::Overrun => str_d.push_str("Overrun").unwrap(),
+                            Error::Parity => str_d.push_str("Parity").unwrap(),
+                            _ => (),
+                        },
+                        nb::Error::WouldBlock => str_d.push_str("Would Block").unwrap(),
 
-        delay.delay_ms(1000);
-        Text::new("1", Point::new(10, 10), style)
+                    }
+                    break;
+                }
+            };
+        }
+        
+        Text::new(&str_d, Point::new(10, 30), style)
             .draw(&mut lcd)
             .unwrap();
-        delay.delay_ms(1000);
+        // delay.delay_ms(1000);
+        // Text::new("end", Point::new(10, 10), style)
+        //     .draw(&mut lcd)
+            // .unwrap();
+        // delay.delay_ms(1000);
     }
 }
