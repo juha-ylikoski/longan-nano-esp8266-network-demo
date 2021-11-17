@@ -7,9 +7,9 @@ use riscv::interrupt;
 pub enum Error {
     Error,
 }
-pub struct Esp8266<'a> {
-    // rx: Rx<USART1>,
-    rx: heapless::spsc::Consumer<'a, u8, 256>,
+pub struct Esp8266 {
+    rx: Rx<USART1>,
+    // rx: heapless::spsc::Consumer<'a, u8, 256>,
     tx: Tx<USART1>,
     delay: RefCell<McycleDelay>,
     tx2: Tx<USART2>,
@@ -104,20 +104,20 @@ mod AT_commands {
     }
 }
 
-impl Esp8266<'_> {
+impl Esp8266 {
     pub fn new(rx: Rx<USART1>, tx: Tx<USART1>, delay: RefCell<McycleDelay>, tx2: Tx<USART2>) -> Self {
 
-        static mut queue: heapless::spsc::Queue<u8, 256> = heapless::spsc::Queue::<u8, 256>::new();
-        let (mut producer, mut consumer) = unsafe {queue.split()};
-        let mut esp = Esp8266 { rx: consumer, tx, delay, tx2 };
+        // static mut queue: heapless::spsc::Queue<u8, 256> = heapless::spsc::Queue::<u8, 256>::new();
+        // let (mut producer, mut consumer) = unsafe {queue.split()};
+        let mut esp = Esp8266 { rx: rx, tx, delay, tx2 };
 
-        let usart1_reader = Usart1Reader {rx, buffer: producer};
-        unsafe {
-            USART1READER.get_mut().replace(Some(usart1_reader));
-        }
+        // let usart1_reader = Usart1Reader {rx, buffer: producer};
+        // unsafe {
+        //     USART1READER.get_mut().replace(Some(usart1_reader));
+        // }
 
-        setup_uart1_interrupts();
-        enable_interrupts();
+        // setup_uart1_interrupts();
+        // enable_interrupts();
     
 
         // Set echo off
@@ -130,23 +130,24 @@ impl Esp8266<'_> {
         esp.tx2.write_str("Emptying rx buffer\r\n").unwrap();
 
         // Empty the rx buffer of any possible junk
-        loop {
-            match esp.rx.dequeue() {
-                Some(_) => (),
-                None => break,
-            }
-        }
-
-        esp.tx2.write_str("Rx buffer empty\r\n").unwrap();
         // loop {
-        //     match esp.rx.read() {
-        //         Ok(_) => (),
-        //         Err(e) => match e {
-        //             nb::Error::Other(_) => (),
-        //             nb::Error::WouldBlock => break,
-        //         },
+        //     match esp.rx.dequeue() {
+        //         Some(_) => (),
+        //         None => break,
         //     }
         // }
+
+        
+        loop {
+            match esp.rx.read() {
+                Ok(_) => (),
+                Err(e) => match e {
+                    nb::Error::Other(_) => (),
+                    nb::Error::WouldBlock => break,
+                },
+            }
+        }
+        esp.tx2.write_str("Rx buffer empty\r\n").unwrap();
         esp
     }
     fn send_cmd(&mut self, cmd: &str) -> fmt::Result {
@@ -161,17 +162,17 @@ impl Esp8266<'_> {
     }
     fn read_command_output(&mut self) -> heapless::String<512> {
         let mut buffer = heapless::String::<512>::new();
-        // let mut tx2_buf = heapless::String::<512>::new();
+        let mut tx2_buf = heapless::String::<512>::new();
         const OK_ENDING: &str = "OK\r\n";
         const ERROR_ENDING: &str = "ERROR\r\n";
         let ok_len = OK_ENDING.len();
         let err_len = ERROR_ENDING.len();
         let mut would_block_counter = 0u16;
 
-        self.tx2.write_str("Reading response\r\n").unwrap();
+        // self.tx2.write_str("Reading response\r\n").unwrap();
         loop {
-            match self.rx.dequeue() {
-                Some(val) => {
+            match self.rx.read() {
+                Ok(val) => {
                     self.tx2.write_char(val as char).unwrap();
                     buffer.push(val as char).unwrap();
                     if &buffer[buffer.len()-ok_len..] == OK_ENDING
@@ -181,28 +182,30 @@ impl Esp8266<'_> {
                         break;
                     }
                 }
-                None => (),
-                // (e) => {
-                //     match e {
-                //         nb::Error::WouldBlock => {
-                //             tx2_buf.push_str("Would block\r\n").unwrap();
-                //             would_block_counter += 1;
-                //         },
-                //         nb::Error::Other(e) => {
-                //             match e {
-                //                 serial::Error::Framing => tx2_buf.push_str("Framing\r\n").unwrap(),
-                //                 serial::Error::Noise => tx2_buf.push_str("Noise\r\n").unwrap(),
-                //                 serial::Error::Overrun => tx2_buf.push_str("Overrun\r\n").unwrap(),
-                //                 serial::Error::Parity => tx2_buf.push_str("Parity\r\n").unwrap(),
-                //                 _ => tx2_buf.push_str("Other\r\n").unwrap(),
-                //             }
-                //         }
-                //     }
-                // }
+                Err(e) => {
+                    match e {
+                        nb::Error::WouldBlock => {
+                            tx2_buf.push_str("Would block\r\n").unwrap();
+                            would_block_counter += 1;
+                        },
+                        nb::Error::Other(e) => {
+                            match e {
+                                serial::Error::Framing => tx2_buf.push_str("Framing\r\n").unwrap(),
+                                serial::Error::Noise => tx2_buf.push_str("Noise\r\n").unwrap(),
+                                serial::Error::Overrun => tx2_buf.push_str("Overrun\r\n").unwrap(),
+                                serial::Error::Parity => tx2_buf.push_str("Parity\r\n").unwrap(),
+                                _ => tx2_buf.push_str("Other\r\n").unwrap(),
+                            }
+                        }
+                    }
+                }
+            }
+            if would_block_counter > 2 {
+                break;
             }
         }
-        // self.tx2.write_str("Error: ").unwrap();
-        // self.tx2.write_str(&tx2_buf).unwrap();
+        self.tx2.write_str("Error: ").unwrap();
+        self.tx2.write_str(&tx2_buf).unwrap();
         self.tx2.write_str("\r\n").unwrap();
         self.tx2.write_str("Read cmd complete\n\r").unwrap();
         self.tx2.write_str(&buffer).unwrap();
@@ -223,9 +226,9 @@ impl Esp8266<'_> {
     pub fn reset(&mut self) -> fmt::Result {
         self.send_cmd(AT_commands::RESET)?;
         loop {
-            match self.rx.dequeue() {
-                Some(_) => (),
-                None => break,
+            match self.rx.read() {
+                Ok(_) => (),
+                Err(_) => break,
             }
         }
         Ok(())

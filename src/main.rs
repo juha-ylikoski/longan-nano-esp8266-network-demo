@@ -127,12 +127,12 @@ fn main() -> ! {
     let uart2 = Serial::new(dp.USART2, (gpiob.pb10.into_alternate_push_pull(), gpiob.pb11.into_floating_input()), UART_CONFIG!(), &mut afio, &mut rcu);
     let (mut tx2, mut rx2) = uart2.split();
 
-    loop {
-        match rx.read() {
-            Ok(v) => tx2.write_char(v as char).unwrap(),
-            Err(_) => ()
-        }
-    }
+    // loop {
+    //     match rx.read() {
+    //         Ok(v) => tx2.write_char(v as char).unwrap(),
+    //         Err(_) => ()
+    //     }
+    // }
 
 
     Text::new("Start setup", Point::new(10, 30), style)
