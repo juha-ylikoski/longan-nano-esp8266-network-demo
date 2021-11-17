@@ -1,6 +1,6 @@
 use core::{cell::RefCell, fmt, fmt::Write, str::from_utf8};
 
-use longan_nano::{self, hal::{delay::McycleDelay, eclic::EclicExt, pac::{ECLIC, Interrupt, USART1, USART2, adc1::stat}, prelude::{_embedded_hal_blocking_delay_DelayMs, _embedded_hal_serial_Read}, serial::{Rx, Tx}, serial}};
+use longan_nano::{self, hal::{delay::McycleDelay, eclic::{EclicExt, Level, LevelPriorityBits}, pac::{ECLIC, Interrupt, USART1, USART2, adc1::stat}, prelude::{_embedded_hal_blocking_delay_DelayMs, _embedded_hal_serial_Read}, serial::{Rx, Tx}, serial}};
 use nb;
 use riscv::interrupt;
 
@@ -28,6 +28,16 @@ fn setup_uart1_interrupts() {
         longan_nano::hal::eclic::Level::L0,
         longan_nano::hal::eclic::Priority::P0,
     );
+    // Set global interrupt threshold level to lowest.
+    // => All interrupts are handled.
+    ECLIC::set_threshold_level(Level::L0);
+
+    // Three bits for level, 1 for priority.
+    ECLIC::set_level_priority_bits(LevelPriorityBits::L3P1);
+
+    unsafe {
+        ECLIC::unmask(Interrupt::USART1);
+    }
 }
 
 fn enable_interrupts() {
@@ -41,6 +51,7 @@ fn enable_interrupts() {
 static mut USART1READER: interrupt::Mutex<RefCell<Option<Usart1Reader>>> = interrupt::Mutex::new(RefCell::new(None));
 #[export_name = "USART1"]
 fn uart_interrupt() {
+    panic!("foo");
     interrupt::free(|_| {
         let reader = unsafe {
             USART1READER.get_mut().get_mut().as_mut().unwrap()
@@ -48,7 +59,7 @@ fn uart_interrupt() {
         let data = reader.rx.read().unwrap();
         reader.buffer.enqueue(data).unwrap();
         ECLIC::unpend(Interrupt::USART1);
-        panic!("foo");
+        
     });
 }
 
@@ -112,6 +123,7 @@ impl Esp8266<'_> {
         esp.tx.write_str(AT_commands::AT_PREFIX).unwrap();
         esp.tx.write_str(AT_commands::ECHO_OFF).unwrap();
         esp.tx.write_str(AT_commands::AT_LINE_ENDING).unwrap();
+        ECLIC::pend(Interrupt::USART1);
         esp.delay.get_mut().delay_ms(5000);
 
         esp.tx2.write_str("Emptying rx buffer\r\n").unwrap();
