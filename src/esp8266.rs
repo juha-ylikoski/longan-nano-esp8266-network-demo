@@ -22,18 +22,19 @@ struct Usart1Reader<'a> {
 
 fn setup_uart1_interrupts() {
     ECLIC::reset();
-    ECLIC::setup(
-        Interrupt::USART1,
-        longan_nano::hal::eclic::TriggerType::FallingEdge,
-        longan_nano::hal::eclic::Level::L0,
-        longan_nano::hal::eclic::Priority::P0,
-    );
     // Set global interrupt threshold level to lowest.
     // => All interrupts are handled.
     ECLIC::set_threshold_level(Level::L0);
 
     // Three bits for level, 1 for priority.
     ECLIC::set_level_priority_bits(LevelPriorityBits::L3P1);
+
+    ECLIC::setup(
+        Interrupt::USART1,
+        longan_nano::hal::eclic::TriggerType::FallingEdge,
+        longan_nano::hal::eclic::Level::L0,
+        longan_nano::hal::eclic::Priority::P0,
+    );
 
     unsafe {
         ECLIC::unmask(Interrupt::USART1);
