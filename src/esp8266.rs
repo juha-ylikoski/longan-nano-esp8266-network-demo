@@ -124,8 +124,8 @@ impl Esp8266 {
         esp.tx.write_str(AT_commands::AT_PREFIX).unwrap();
         esp.tx.write_str(AT_commands::ECHO_OFF).unwrap();
         esp.tx.write_str(AT_commands::AT_LINE_ENDING).unwrap();
-        ECLIC::pend(Interrupt::USART1);
-        esp.delay.get_mut().delay_ms(5000);
+        // ECLIC::pend(Interrupt::USART1);
+        // esp.delay.get_mut().delay_ms(5000);
 
         esp.tx2.write_str("Emptying rx buffer\r\n").unwrap();
 
