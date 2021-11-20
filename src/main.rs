@@ -152,77 +152,13 @@ fn main() -> ! {
         .unwrap();
     esp.connect_wifi().unwrap();
     Text::new("Connected to WiFi", Point::new(10, 30), style)
-        .draw(&mut lcd)
-        .unwrap();
-    loop {}
-    // for _ in 0..11 {
-    //     rx.read().unwrap();
-    // }
+            .draw(&mut lcd)
+            .unwrap();
 
-    // setup_uart1_interrupts(rx);
-    // enable_interrupts();
-
+    
+    esp.start_tcp_connection().unwrap();
     loop {
-        // Clear screen
-        Rectangle::new(Point::new(0, 0), Size::new(width as u32, height as u32))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(&mut lcd)
-            .unwrap();
-        tx.write_str("AT\r\n").unwrap();
-        Text::new("Write AT", Point::new(10, 10), style)
-            .draw(&mut lcd)
-            .unwrap();
-
-        let mut data = ' ';
-        let mut str_d = heapless::String::<32>::new();
-        let mut i: u8 = 1;
-        while data != '\n' {
-            Text::new(
-                from_utf8(&(i.to_le_bytes())).unwrap(),
-                Point::new(40, 40),
-                style,
-            )
-            .draw(&mut lcd)
-            .unwrap();
-            i += 1;
-            match rx.read() {
-                Ok(v) => {
-                    // let v = [v];
-                    // let s = from_utf8(&v).unwrap();
-                    let mut s = "f";
-                    if v == 0x0a {
-                        s = "\n";
-                        data = '\n';
-                    } else {
-                        s = "o";
-                        data = 'o';
-                    }
-                    str_d.push_str(s).unwrap();
-                    // data = s.chars().nth(0).unwrap();
-                }
-                Err(e) => {
-                    match e {
-                        nb::Error::Other(e) => match e {
-                            Error::Framing => str_d.push_str("Framing").unwrap(),
-                            Error::Noise => str_d.push_str("Noise").unwrap(),
-                            Error::Overrun => str_d.push_str("Overrun").unwrap(),
-                            Error::Parity => str_d.push_str("Parity").unwrap(),
-                            _ => (),
-                        },
-                        nb::Error::WouldBlock => str_d.push_str("Would Block").unwrap(),
-                    }
-                    // break;
-                }
-            };
-        }
-
-        Text::new(&str_d, Point::new(10, 30), style)
-            .draw(&mut lcd)
-            .unwrap();
-        // delay.delay_ms(1000);
-        // Text::new("end", Point::new(10, 10), style)
-        //     .draw(&mut lcd)
-        // .unwrap();
-        // delay.delay_ms(1000);
+        
     }
+
 }
