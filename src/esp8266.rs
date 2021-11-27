@@ -8,8 +8,6 @@ use longan_nano::{
         serial::{Rx, Tx},
     },
 };
-use nb;
-
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Esp8266Error {
     Error(heapless::String<512>),
@@ -77,7 +75,7 @@ mod at_commands {
     pub const SET_STA_MODE: &str = "+CWMODE=1";
     pub const QUERY_AP: &str = "+CWJAP?";
 
-    pub fn set_wifi_ap<'a>(buf: &'a mut [u8]) -> Result<&'a [u8], usize> {
+    pub fn set_wifi_ap(buf: &mut [u8]) -> Result<&[u8], usize> {
         CommandBuilder::create_set(buf, false)
             .named("+CWJAP")
             .with_string_parameter(SSID.or(Some(DEFAULT_SSID)).unwrap())
@@ -85,7 +83,7 @@ mod at_commands {
             .finish()
     }
 
-    pub fn start_tcp_connection<'a>(buf: &'a mut [u8]) -> Result<&'a [u8], usize> {
+    pub fn start_tcp_connection(buf: &mut [u8]) -> Result<&[u8], usize> {
         CommandBuilder::create_set(buf, false)
             .named("+CIPSTART")
             .with_string_parameter("TCP")
@@ -156,23 +154,19 @@ impl Esp8266 {
         const OK_ENDING: &str = "OK\r\n";
         const ERROR_ENDING: &str = "ERROR\r\n";
         const FAIL_ENDING: &str = "FAIL\r\n";
-        self.send_cmd(cmd, prefix)
-            .or_else(|e| Err(Esp8266Error::FmtError(e)))?;
+        self.send_cmd(cmd, prefix).map_err(Esp8266Error::FmtError)?;
         loop {
-            match self.rx.read() {
-                Ok(val) => {
-                    // self.tx2.write_char(val as char);
-                    buffer.push(val as char).unwrap();
-                    if val as char == '\n' && buffer.len() > OK_ENDING.len() {
-                        if buffer.ends_with(OK_ENDING)
-                            || buffer.ends_with(ERROR_ENDING)
-                            || buffer.ends_with(FAIL_ENDING)
-                        {
-                            break;
-                        }
-                    }
+            if let Ok(val) = self.rx.read() {
+                // self.tx2.write_char(val as char);
+                buffer.push(val as char).unwrap();
+                if val as char == '\n'
+                    && buffer.len() > OK_ENDING.len()
+                    && (buffer.ends_with(OK_ENDING)
+                        || buffer.ends_with(ERROR_ENDING)
+                        || buffer.ends_with(FAIL_ENDING))
+                {
+                    break;
                 }
-                Err(_) => {}
             }
         }
         let mut stripped_buf = buffer.trim_start_matches("\r\n");
@@ -223,12 +217,7 @@ impl Esp8266 {
     #[allow(dead_code)]
     pub fn reset(&mut self) -> fmt::Result {
         self.send_cmd(at_commands::RESET, true)?;
-        loop {
-            match self.rx.read() {
-                Ok(_) => (),
-                Err(_) => break,
-            }
-        }
+        while self.rx.read().is_ok() {}
         Ok(())
     }
     pub fn connect_wifi(&mut self) -> Result<(), Esp8266Error> {
@@ -266,42 +255,32 @@ impl Esp8266 {
         const ERROR_ENDING: &str = "ERROR\r\n";
         const FAIL_ENDING: &str = "FAIL\r\n";
         self.send_cmd(&http_cmd, false)
-            .or_else(|e| Err(Esp8266Error::FmtError(e)))?;
+            .map_err(Esp8266Error::FmtError)?;
         loop {
-            match self.rx.read() {
-                Ok(val) => {
-                    buffer.push(val as char).unwrap();
-                    if val as char == '\n' && buffer.len() > OK_ENDING.len() {
-                        if buffer.ends_with(OK_ENDING)
-                            || buffer.ends_with(ERROR_ENDING)
-                            || buffer.ends_with(FAIL_ENDING)
-                        {
-                            break;
-                        }
-                    }
+            if let Ok(val) = self.rx.read() {
+                buffer.push(val as char).unwrap();
+                if val as char == '\n'
+                    && buffer.len() > OK_ENDING.len()
+                    && (buffer.ends_with(OK_ENDING)
+                        || buffer.ends_with(ERROR_ENDING)
+                        || buffer.ends_with(FAIL_ENDING))
+                {
+                    break;
                 }
-                Err(_) => {}
             }
         }
         if !buffer.ends_with("OK\r\n") {
             self.tx2.write_str("GETERROR: \r\n").unwrap();
             self.tx2.write_str(&buffer).unwrap();
             self.tx2.write_str("\r\n").unwrap();
-            return Err(Esp8266Error::GetError(heapless::String::<128>::from(
-                buffer,
-            )));
+            return Err(Esp8266Error::GetError(buffer));
         }
         loop {
-            match self.rx.read() {
-                Ok(v) => {
-                    buf.push(v as char).unwrap();
-                    if v as char == '\n' {
-                        if buf.contains(CLOSED_ENDING) {
-                            break;
-                        }
-                    }
+            if let Ok(v) = self.rx.read() {
+                buf.push(v as char).unwrap();
+                if v as char == '\n' && buf.contains(CLOSED_ENDING) {
+                    break;
                 }
-                Err(_) => (),
             }
         }
         let mut http_resp = heapless::String::<8192>::new();
@@ -314,48 +293,39 @@ impl Esp8266 {
         static IPD_SEPARATOR: &str = "\r\n+IPD,";
 
         let start_index = buf.find("Content-Type: application/json");
-        match start_index {
-            Some(index) => {
-                let mut resp = &buf[index..(buf.len() - CLOSED_ENDING.len())];
-                if resp.contains(IPD_SEPARATOR) {
+        if let Some(index) = start_index {
+            let mut resp = &buf[index..(buf.len() - CLOSED_ENDING.len())];
+            if resp.contains(IPD_SEPARATOR) {
+                while let Some(index) = resp.find(IPD_SEPARATOR) {
+                    let mut ipd_len = 5;
+                    if index > 1 {
+                        let start = &resp[..index - 1];
+                        http_resp.push_str(start).unwrap();
+                    }
                     loop {
-                        match resp.find(IPD_SEPARATOR) {
-                            Some(index) => {
-                                let mut ipd_len = 5;
-                                if index > 1 {
-                                    let start = &resp[..index - 1];
-                                    http_resp.push_str(start).unwrap();
-                                }
-                                loop {
-                                    if &resp[index + ipd_len..index + ipd_len + 1] != ":" {
-                                        ipd_len += 1;
-                                    } else {
-                                        ipd_len += 1;
-                                        break;
-                                    }
-                                }
-                                let ipd_end_index = index + ipd_len;
-                                resp = &resp[ipd_end_index..];
-                            }
-                            None => break,
+                        ipd_len += 1;
+                        if &resp[index + ipd_len - 1..index + ipd_len] != ":" {
+                        } else {
+                            break;
                         }
                     }
-                } else {
-                    http_resp.push_str(&resp).unwrap()
+                    let ipd_end_index = index + ipd_len;
+                    resp = &resp[ipd_end_index..];
                 }
+            } else {
+                http_resp.push_str(resp).unwrap()
             }
-            None => (),
         }
-        self.tx2.write_str("\r\n\r\n\r\n").unwrap();
-        self.tx2.write_str("resp:\r\n").unwrap();
-        self.tx2.write_str(&http_resp).unwrap();
+        // self.tx2.write_str("\r\n\r\n\r\n").unwrap();
+        // self.tx2.write_str("resp:\r\n").unwrap();
+        // self.tx2.write_str(&http_resp).unwrap();
 
         let json_start = http_resp.find("\r\n\r\n").unwrap() + 4;
         let json_content = &http_resp[json_start..];
-        let json_content = json_content.trim_end_matches("\n").trim_end_matches("\r");
+        let json_content = json_content.trim_end_matches('\n').trim_end_matches('\r');
         let json = json_content
             .parse::<i32>()
-            .or_else(|_| Err(Esp8266Error::JsonError))?;
+            .map_err(|_| Esp8266Error::JsonError)?;
 
         Ok(HttpJsonResp {
             code: http_resp_code,
