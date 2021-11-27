@@ -1,14 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{
-    borrow::Borrow,
-    cell::RefCell,
-    fmt::Write,
-    ops::DerefMut,
-    ptr::NonNull,
-    str::{from_utf8, FromStr},
-};
+use core::{cell::RefCell, fmt::Write};
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::{
@@ -18,26 +11,19 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
-use heapless::{String, Vec};
+use esp8266::Esp8266Error;
+use longan_nano::hal::prelude::*;
 use longan_nano::{
     hal::{
         delay::McycleDelay,
-        eclic::EclicExt,
         gpio::GpioExt,
-        pac::{Interrupt, Peripherals, ECLIC, USART1},
+        pac::Peripherals,
         rcu::RcuExt,
-        serial::{Config, Error, Rx, Serial},
+        serial::{Config, Serial},
     },
     lcd, lcd_pins,
 };
-use longan_nano::{
-    hal::{prelude::*, serial::Tx},
-    lcd::Lcd,
-    led::{rgb, Led},
-};
-use nb;
 use panic_halt as _;
-use riscv::interrupt::{self, CriticalSection};
 use riscv_rt::entry;
 
 mod esp8266;
@@ -54,39 +40,6 @@ macro_rules! UART_CONFIG {
     };
 }
 
-
-enum UartErrors {
-    EMPTY,
-}
-
-// fn read_from_uart_buffer() -> Result<u8, UartErrors> {
-//     let empty = unsafe { _UART_BUFFER.get_mut().is_empty() };
-//     if empty {
-//         Err(UartErrors::EMPTY)
-//     } else {
-//         let val = unsafe { _UART_BUFFER.get_mut().dequeue().unwrap() };
-//         Ok(val)
-//     }
-// }
-
-// fn read_buffer() -> heapless::String<128> {
-//     let mut data = [0u8; 128];
-//     let mut i = 0;
-//     loop {
-//         match read_from_uart_buffer() {
-//             Ok(val) => data[i] = val,
-//             Err(_) => (),
-//         }
-//         i += 1;
-//         if i > 2 {
-//             break;
-//         }
-//     }
-//     let bytes = from_utf8(&data[0..i]).unwrap();
-//     heapless::String::from_str(bytes).unwrap()
-// }
-
-
 #[entry]
 fn main() -> ! {
     let dp = Peripherals::take().unwrap();
@@ -101,8 +54,12 @@ fn main() -> ! {
     let lcd_pins = lcd_pins!(gpioa, gpiob);
     let mut afio = dp.AFIO.constrain(&mut rcu);
     let mut lcd = lcd::configure(dp.SPI0, lcd_pins, &mut afio, &mut rcu);
-    let mut delay_clock = McycleDelay::new(&rcu.clocks);
+    let delay_clock = McycleDelay::new(&rcu.clocks);
     let mut delay = RefCell::new(delay_clock);
+
+    unsafe {
+        riscv::interrupt::disable();
+    }
 
     let style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
@@ -110,8 +67,6 @@ fn main() -> ! {
         .background_color(Rgb565::BLACK)
         .build();
     let (width, height) = (lcd.size().width as i32, lcd.size().height as i32);
-
-    
 
     let tx = gpioa.pa2.into_alternate_push_pull();
     let rx = gpioa.pa3.into_floating_input();
@@ -122,25 +77,26 @@ fn main() -> ! {
         .unwrap();
 
     let uart = Serial::new(dp.USART1, (tx, rx), UART_CONFIG!(), &mut afio, &mut rcu);
-    let (mut tx, mut rx) = uart.split();
+    let (tx, rx) = uart.split();
 
-    let uart2 = Serial::new(dp.USART2, (gpiob.pb10.into_alternate_push_pull(), gpiob.pb11.into_floating_input()), UART_CONFIG!(), &mut afio, &mut rcu);
-    let (mut tx2, mut rx2) = uart2.split();
-
-    // loop {
-    //     match rx.read() {
-    //         Ok(v) => tx2.write_char(v as char).unwrap(),
-    //         Err(_) => ()
-    //     }
-    // }
-
+    let uart2 = Serial::new(
+        dp.USART2,
+        (
+            gpiob.pb10.into_alternate_push_pull(),
+            gpiob.pb11.into_floating_input(),
+        ),
+        UART_CONFIG!(),
+        &mut afio,
+        &mut rcu,
+    );
+    let (mut tx2, _) = uart2.split();
 
     Text::new("Start setup", Point::new(10, 30), style)
         .draw(&mut lcd)
         .unwrap();
 
     tx2.write_str("Creating ESP8266\r\n").unwrap();
-    let mut esp = esp8266::Esp8266::new(rx, tx, delay, tx2);
+    let mut esp = esp8266::Esp8266::new(rx, tx, RefCell::clone(&delay), tx2);
 
     Text::new("Setup complete", Point::new(10, 30), style)
         .draw(&mut lcd)
@@ -151,14 +107,28 @@ fn main() -> ! {
         .draw(&mut lcd)
         .unwrap();
     esp.connect_wifi().unwrap();
-    Text::new("Connected to WiFi", Point::new(10, 30), style)
-            .draw(&mut lcd)
-            .unwrap();
 
-    
-    esp.start_tcp_connection().unwrap();
     loop {
-        
-    }
+        match esp.get() {
+            Ok(v) => {
+                let mut txt = heapless::String::<32>::from("Epoch time: \n");
+                let json = v.json;
+                txt.push_str(&heapless::String::<16>::from(json)).unwrap();
 
+                Text::new(&txt, Point::new(10, 30), style)
+                    .draw(&mut lcd)
+                    .unwrap();
+            }
+            Err(e) => {
+                if let Esp8266Error::GetError(v) = e {
+                    let mut s = heapless::String::<256>::from("GetError ");
+                    s.push_str(&v).unwrap();
+                    Text::new(&s, Point::new(10, 30), style)
+                        .draw(&mut lcd)
+                        .unwrap();
+                }
+            }
+        }
+        delay.get_mut().delay_ms(1000);
+    }
 }

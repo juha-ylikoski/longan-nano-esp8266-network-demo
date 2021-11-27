@@ -1,71 +1,34 @@
 use core::{cell::RefCell, fmt, fmt::Write, str::from_utf8};
-
-use longan_nano::{self, hal::{delay::McycleDelay, eclic::{EclicExt, Level, LevelPriorityBits}, pac::{ECLIC, Interrupt, USART1, USART2, adc1::stat}, prelude::{_embedded_hal_blocking_delay_DelayMs, _embedded_hal_blocking_delay_DelayUs, _embedded_hal_serial_Read}, serial::{Rx, Tx}, serial}};
+use longan_nano::{
+    self,
+    hal::{
+        delay::McycleDelay,
+        pac::{USART1, USART2},
+        prelude::{_embedded_hal_blocking_delay_DelayMs, _embedded_hal_serial_Read},
+        serial::{Rx, Tx},
+    },
+};
 use nb;
-use riscv::interrupt;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Esp8266Error {
-    Error(heapless::String::<512>),
-    FmtError(fmt::Error)
+    Error(heapless::String<512>),
+    FmtError(fmt::Error),
+    GetError(heapless::String<128>),
+    JsonError,
 }
 pub struct Esp8266 {
     rx: Rx<USART1>,
-    // rx: heapless::spsc::Consumer<'a, u8, 256>,
     tx: Tx<USART1>,
     delay: RefCell<McycleDelay>,
     tx2: Tx<USART2>,
 }
 
-struct Usart1Reader<'a> {
-    rx: Rx<USART1>,
-    buffer: heapless::spsc::Producer<'a, u8, 256>
+pub struct HttpJsonResp {
+    pub code: u16,
+    pub http_resp: heapless::String<8192>,
+    pub json: i32,
 }
-
-fn setup_uart1_interrupts() {
-    ECLIC::reset();
-    // Set global interrupt threshold level to lowest.
-    // => All interrupts are handled.
-    ECLIC::set_threshold_level(Level::L0);
-
-    // Three bits for level, 1 for priority.
-    ECLIC::set_level_priority_bits(LevelPriorityBits::L3P1);
-
-    ECLIC::setup(
-        Interrupt::USART1,
-        longan_nano::hal::eclic::TriggerType::FallingEdge,
-        longan_nano::hal::eclic::Level::L0,
-        longan_nano::hal::eclic::Priority::P0,
-    );
-
-    unsafe {
-        ECLIC::unmask(Interrupt::USART1);
-    }
-}
-
-fn enable_interrupts() {
-    unsafe {
-        interrupt::enable();
-    }
-}
-
-
-
-static mut USART1READER: interrupt::Mutex<RefCell<Option<Usart1Reader>>> = interrupt::Mutex::new(RefCell::new(None));
-#[export_name = "USART1"]
-fn uart_interrupt() {
-    panic!("foo");
-    interrupt::free(|_| {
-        let reader = unsafe {
-            USART1READER.get_mut().get_mut().as_mut().unwrap()
-        }; 
-        let data = reader.rx.read().unwrap();
-        reader.buffer.enqueue(data).unwrap();
-        ECLIC::unpend(Interrupt::USART1);
-        
-    });
-}
-
 
 const SSID: Option<&str> = option_env!("SSID");
 const PASSWORD: Option<&str> = option_env!("PASSWORD");
@@ -73,15 +36,28 @@ const PASSWORD: Option<&str> = option_env!("PASSWORD");
 const DEFAULT_SSID: &str = "1234";
 const DEFAULT_PASSWORD: &str = "1234";
 
-const SITE_IP_ADDR: &str = "192.168.0.126";
-const SITE_PORT: u16 = 8000;
+const SITE_IP_ADDR: &str = "192.168.0.147";
+const SITE_PORT: u16 = 5000;
+
+fn http_get_payload() -> heapless::String<128> {
+    // "GET / HTTP/1.1\r\nHost: 192.168.0.147:5000\r\nAccept: application/json\r\n\r\n";
+    let mut get = heapless::String::<128>::from("GET / HTTP/1.1\r\nHost: ");
+    get.push_str(SITE_IP_ADDR).unwrap();
+    get.push_str(":").unwrap();
+    get.push_str(&heapless::String::<8>::from(SITE_PORT))
+        .unwrap();
+    get.push_str("\r\nAccept: application/json\r\n\r\n")
+        .unwrap();
+    get
+}
 
 ///
 /// At commands from <https://docs.espressif.com/projects/esp-at/en/latest/AT_Command_Set/>
 ///
 /// commands do not include the "AT" prefix
 #[macro_use]
-mod AT_commands {
+#[allow(dead_code)]
+mod at_commands {
 
     use at_commands::builder::CommandBuilder;
 
@@ -103,10 +79,10 @@ mod AT_commands {
 
     pub fn set_wifi_ap<'a>(buf: &'a mut [u8]) -> Result<&'a [u8], usize> {
         CommandBuilder::create_set(buf, false)
-        .named("+CWJAP")
-        .with_string_parameter(SSID.or(Some(DEFAULT_SSID)).unwrap())
-        .with_string_parameter(PASSWORD.or(Some(DEFAULT_PASSWORD)).unwrap())
-        .finish()
+            .named("+CWJAP")
+            .with_string_parameter(SSID.or(Some(DEFAULT_SSID)).unwrap())
+            .with_string_parameter(PASSWORD.or(Some(DEFAULT_PASSWORD)).unwrap())
+            .finish()
     }
 
     pub fn start_tcp_connection<'a>(buf: &'a mut [u8]) -> Result<&'a [u8], usize> {
@@ -115,13 +91,14 @@ mod AT_commands {
             .with_string_parameter("TCP")
             .with_string_parameter(SITE_IP_ADDR)
             .with_int_parameter(SITE_PORT)
-            .finish()    
+            .finish()
     }
 
-    pub fn cipsend(length: usize) -> heapless::String::<32> {
+    pub fn cipsend(length: usize) -> heapless::String<32> {
         let mut s = heapless::String::<32>::new();
         s.push_str("+CIPSEND=").unwrap();
-        s.push_str(&heapless::String::<8>::from(length as u8)).unwrap();
+        s.push_str(&heapless::String::<8>::from(length as u8))
+            .unwrap();
         s
     }
 
@@ -129,13 +106,18 @@ mod AT_commands {
 }
 
 impl Esp8266 {
-    pub fn new(rx: Rx<USART1>, tx: Tx<USART1>, delay: RefCell<McycleDelay>, tx2: Tx<USART2>) -> Self {
+    pub fn new(
+        rx: Rx<USART1>,
+        tx: Tx<USART1>,
+        delay: RefCell<McycleDelay>,
+        tx2: Tx<USART2>,
+    ) -> Self {
         let mut esp = Esp8266 { rx, tx, delay, tx2 };
 
         // Set echo off
-        esp.tx.write_str(AT_commands::AT_PREFIX).unwrap();
-        esp.tx.write_str(AT_commands::ECHO_OFF).unwrap();
-        esp.tx.write_str(AT_commands::AT_LINE_ENDING).unwrap();
+        esp.tx.write_str(at_commands::AT_PREFIX).unwrap();
+        esp.tx.write_str(at_commands::ECHO_OFF).unwrap();
+        esp.tx.write_str(at_commands::AT_LINE_ENDING).unwrap();
 
         esp.tx2.write_str("Emptying rx buffer\r\n").unwrap();
 
@@ -154,76 +136,48 @@ impl Esp8266 {
     fn send_cmd(&mut self, cmd: &str, prefix: bool) -> fmt::Result {
         self.tx2.write_str("Sending: ").unwrap();
         if prefix {
-            self.tx2.write_str(AT_commands::AT_PREFIX).unwrap();
+            self.tx2.write_str(at_commands::AT_PREFIX).unwrap();
         }
         self.tx2.write_str(cmd).unwrap();
         self.tx2.write_str("\r\n").unwrap();
         if prefix {
-            self.tx.write_str(AT_commands::AT_PREFIX)?;
+            self.tx.write_str(at_commands::AT_PREFIX)?;
         }
         self.tx.write_str(cmd)?;
-        self.tx.write_str(AT_commands::AT_LINE_ENDING)
-
+        self.tx.write_str(at_commands::AT_LINE_ENDING)
     }
 
-    fn communicate(&mut self, cmd: &str, prefix: bool) -> Result<heapless::String<512>, Esp8266Error> {
+    fn communicate_no_tx2_write(
+        &mut self,
+        cmd: &str,
+        prefix: bool,
+    ) -> Result<heapless::String<512>, Esp8266Error> {
         let mut buffer = heapless::String::<512>::new();
         const OK_ENDING: &str = "OK\r\n";
         const ERROR_ENDING: &str = "ERROR\r\n";
         const FAIL_ENDING: &str = "FAIL\r\n";
-        let ok_len = OK_ENDING.len();
-        let err_len = ERROR_ENDING.len();
-        let fail_len = FAIL_ENDING.len();
-        let mut would_block_counter = 0u16;
-
-        // self.tx2.write_str("Reading response\r\n").unwrap();
-        self.send_cmd(cmd, prefix).or_else(|e| Err(Esp8266Error::FmtError(e)))?;
+        self.send_cmd(cmd, prefix)
+            .or_else(|e| Err(Esp8266Error::FmtError(e)))?;
         loop {
             match self.rx.read() {
                 Ok(val) => {
+                    // self.tx2.write_char(val as char);
                     buffer.push(val as char).unwrap();
                     if val as char == '\n' && buffer.len() > OK_ENDING.len() {
-                        if &buffer[buffer.len()-ok_len..] == OK_ENDING
-                                    || &buffer[buffer.len()-err_len..]
-                                        == ERROR_ENDING || &buffer[buffer.len()-fail_len..]
-                                        == FAIL_ENDING
-                                {
-                                    break;
-                                }
-                            }
-                }
-                Err(e) => {
-                    match e {
-                        nb::Error::WouldBlock => {
-                            // would_block_counter += 1;
-                            self.delay.get_mut().delay_us(1);
-                            
-                        },
-                        nb::Error::Other(e) => {
-                            // match e {
-                            //     serial::Error::Framing => tx2_buf.push_str("Framing\r\n").unwrap(),
-                            //     serial::Error::Noise => tx2_buf.push_str("Noise\r\n").unwrap(),
-                            //     serial::Error::Overrun => tx2_buf.push_str("Overrun\r\n").unwrap(),
-                            //     serial::Error::Parity => tx2_buf.push_str("Parity\r\n").unwrap(),
-                            //     _ => tx2_buf.push_str("Other\r\n").unwrap(),
-                            // };
-                            would_block_counter += 1;
+                        if buffer.ends_with(OK_ENDING)
+                            || buffer.ends_with(ERROR_ENDING)
+                            || buffer.ends_with(FAIL_ENDING)
+                        {
+                            break;
                         }
                     }
                 }
+                Err(_) => {}
             }
-            // if would_block_counter > 65534 {
-            //     break;
-            // }
         }
-        let mut stripped_buf =  buffer.trim_start_matches("\r\n");
+        let mut stripped_buf = buffer.trim_start_matches("\r\n");
         stripped_buf = stripped_buf.trim_end_matches("\r\n");
         let buffer_stripped = heapless::String::<512>::from(stripped_buf);
-        self.tx2.write_str("Read cmd complete\n\r").unwrap();
-        self.tx2.write_str(&buffer_stripped).unwrap();
-        self.tx2.write_str("\r\n").unwrap();
-        if buffer_stripped.contains("busy") {
-        }
         if buffer_stripped.contains("OK") {
             Ok(buffer_stripped)
         } else {
@@ -231,14 +185,44 @@ impl Esp8266 {
         }
     }
 
+    fn communicate(
+        &mut self,
+        cmd: &str,
+        prefix: bool,
+    ) -> Result<heapless::String<512>, Esp8266Error> {
+        match self.communicate_no_tx2_write(cmd, prefix) {
+            Ok(val) => {
+                self.tx2.write_str("Read cmd complete: ").unwrap();
+                self.tx2.write_str(&val).unwrap();
+                self.tx2.write_str("\r\n").unwrap();
+                Ok(val)
+            }
+            Err(e) => match e {
+                Esp8266Error::Error(e) => {
+                    self.tx2
+                        .write_str("Read cmd complete. Got error: ")
+                        .unwrap();
+                    self.tx2.write_str(&e).unwrap();
+                    self.tx2.write_str("\r\n").unwrap();
+                    Err(Esp8266Error::Error(e))
+                }
+                Esp8266Error::FmtError(e) => Err(Esp8266Error::FmtError(e)),
+                // Should never get here
+                _ => panic!("Bad return value"),
+            },
+        }
+    }
+
     pub fn at(&mut self) -> Result<(), Esp8266Error> {
-        match self.communicate(AT_commands::AT, true) {
+        let res = self.communicate(at_commands::AT, true);
+        match res {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
     }
+    #[allow(dead_code)]
     pub fn reset(&mut self) -> fmt::Result {
-        self.send_cmd(AT_commands::RESET, true)?;
+        self.send_cmd(at_commands::RESET, true)?;
         loop {
             match self.rx.read() {
                 Ok(_) => (),
@@ -249,43 +233,134 @@ impl Esp8266 {
     }
     pub fn connect_wifi(&mut self) -> Result<(), Esp8266Error> {
         let mut buf = [0u8; 128];
-        let cmd = AT_commands::set_wifi_ap(&mut buf).unwrap();
+        let cmd = at_commands::set_wifi_ap(&mut buf).unwrap();
         let cmd_str = from_utf8(cmd).unwrap();
         let mut set_mode = heapless::String::<64>::new();
-        // set_mode.push_str(AT_commands::AT_PREFIX).unwrap();
-        set_mode.push_str(AT_commands::SET_STA_MODE).unwrap();
+        // set_mode.push_str(at_commands::AT_PREFIX).unwrap();
+        set_mode.push_str(at_commands::SET_STA_MODE).unwrap();
         self.communicate(&set_mode, true)?;
         self.delay.get_mut().delay_ms(1000);
         self.communicate(cmd_str, true)?;
         Ok(())
     }
 
-    pub fn start_tcp_connection(&mut self) -> Result<(), Esp8266Error> {
+    pub fn get(&mut self) -> Result<HttpJsonResp, Esp8266Error> {
         let mut buf = [0u8; 128];
-        let cmd = AT_commands::start_tcp_connection(&mut buf).unwrap();
+        let cmd = at_commands::start_tcp_connection(&mut buf).unwrap();
         let cmd_str = from_utf8(cmd).unwrap();
         self.communicate(cmd_str, true)?;
-        self.communicate(AT_commands::SET_TRANSPARENT_TRANSMISSION, true)?;
-        let http_cmd = "GET / HTTP/1.1\r\nHost: 192.168.0.126:8000\r\nAccept: */*\r\n\r\n";
-        self.communicate(&AT_commands::cipsend(http_cmd.len()), true)?;
-        let mut buf = heapless::String::<16384>::new();
+        self.communicate(at_commands::SET_TRANSPARENT_TRANSMISSION, true)?;
+        // http://172.18.12.48:5000/
+        let http_cmd = http_get_payload();
+        self.communicate(&at_commands::cipsend(http_cmd.len()), true)?;
+        let mut buf = heapless::String::<8192>::new();
         const CLOSED_ENDING: &str = "CLOSED\r\n";
-        self.communicate(&http_cmd, false)?;
+
+        // For some reason if I use communicate_no_tx2_write previous at() stops working buffer.ends_with(OK_ENDING) if statement. Don't know what happens there might be
+        // panic but without debugger could not determine reason. The only thing which I think might cause this is some code optimizations which don't like the prefix being false in
+        // this and true in everything else but hard to say what it really is without debugger.
+        // This operation needs to be relatively fast so no tx2 write after OK received because +IDP are going to be written just after OK received.
+
+        let mut buffer = heapless::String::<128>::new();
+        const OK_ENDING: &str = "OK\r\n";
+        const ERROR_ENDING: &str = "ERROR\r\n";
+        const FAIL_ENDING: &str = "FAIL\r\n";
+        self.send_cmd(&http_cmd, false)
+            .or_else(|e| Err(Esp8266Error::FmtError(e)))?;
+        loop {
+            match self.rx.read() {
+                Ok(val) => {
+                    buffer.push(val as char).unwrap();
+                    if val as char == '\n' && buffer.len() > OK_ENDING.len() {
+                        if buffer.ends_with(OK_ENDING)
+                            || buffer.ends_with(ERROR_ENDING)
+                            || buffer.ends_with(FAIL_ENDING)
+                        {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        if !buffer.ends_with("OK\r\n") {
+            self.tx2.write_str("GETERROR: \r\n").unwrap();
+            self.tx2.write_str(&buffer).unwrap();
+            self.tx2.write_str("\r\n").unwrap();
+            return Err(Esp8266Error::GetError(heapless::String::<128>::from(
+                buffer,
+            )));
+        }
         loop {
             match self.rx.read() {
                 Ok(v) => {
                     buf.push(v as char).unwrap();
-                    if v as char == '\n' && buf.len() > CLOSED_ENDING.len() {
-                        if &buf[buf.len()-CLOSED_ENDING.len()..] == CLOSED_ENDING
-                                {
-                                    break;
-                                }
-                            }
-                },
-                Err(_) => ()
+                    if v as char == '\n' {
+                        if buf.contains(CLOSED_ENDING) {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => (),
             }
         }
-        self.tx2.write_str(&buf).unwrap();
-        Ok(())
+        let mut http_resp = heapless::String::<8192>::new();
+
+        let http_resp_start_index = buf.find("HTTP/1.0 ").unwrap() + "HTTP/1.0 ".len();
+        let http_resp_code = &buf[http_resp_start_index..http_resp_start_index + 3];
+        let http_resp_code = http_resp_code.parse::<u16>().unwrap();
+
+        // IPD packet starts with "\r\nIPD,\d+:"
+        static IPD_SEPARATOR: &str = "\r\n+IPD,";
+
+        let start_index = buf.find("Content-Type: application/json");
+        match start_index {
+            Some(index) => {
+                let mut resp = &buf[index..(buf.len() - CLOSED_ENDING.len())];
+                if resp.contains(IPD_SEPARATOR) {
+                    loop {
+                        match resp.find(IPD_SEPARATOR) {
+                            Some(index) => {
+                                let mut ipd_len = 5;
+                                if index > 1 {
+                                    let start = &resp[..index - 1];
+                                    http_resp.push_str(start).unwrap();
+                                }
+                                loop {
+                                    if &resp[index + ipd_len..index + ipd_len + 1] != ":" {
+                                        ipd_len += 1;
+                                    } else {
+                                        ipd_len += 1;
+                                        break;
+                                    }
+                                }
+                                let ipd_end_index = index + ipd_len;
+                                resp = &resp[ipd_end_index..];
+                            }
+                            None => break,
+                        }
+                    }
+                } else {
+                    http_resp.push_str(&resp).unwrap()
+                }
+            }
+            None => (),
+        }
+        self.tx2.write_str("\r\n\r\n\r\n").unwrap();
+        self.tx2.write_str("resp:\r\n").unwrap();
+        self.tx2.write_str(&http_resp).unwrap();
+
+        let json_start = http_resp.find("\r\n\r\n").unwrap() + 4;
+        let json_content = &http_resp[json_start..];
+        let json_content = json_content.trim_end_matches("\n").trim_end_matches("\r");
+        let json = json_content
+            .parse::<i32>()
+            .or_else(|_| Err(Esp8266Error::JsonError))?;
+
+        Ok(HttpJsonResp {
+            code: http_resp_code,
+            http_resp,
+            json,
+        })
     }
 }
