@@ -238,7 +238,7 @@ impl Esp8266 {
         let cmd = at_commands::start_tcp_connection(&mut buf).unwrap();
         let cmd_str = from_utf8(cmd).unwrap();
         self.communicate(cmd_str, true)?;
-        self.communicate(at_commands::SET_TRANSPARENT_TRANSMISSION, true)?;
+        // self.communicate(at_commands::SET_TRANSPARENT_TRANSMISSION, true)?;
         // http://172.18.12.48:5000/
         let http_cmd = http_get_payload();
         self.communicate(&at_commands::cipsend(http_cmd.len()), true)?;
