@@ -1,6 +1,6 @@
 # Demo project for [longan nano](https://www.seeedstudio.com/Sipeed-Longan-Nano-RISC-V-GD32VF103CBT6-Development-Board-p-4205.html) risc-v based development board with networking
 
-Demo project with networking for longan nano with networking. Longan nano connected to eps8266
+Demo project with networking for longan nano with networking. Longan nano connected to eps8266 and communicates with AT commands.
 
 ## Wiring diagram
 
