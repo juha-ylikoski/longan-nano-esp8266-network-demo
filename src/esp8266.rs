@@ -28,27 +28,19 @@ pub struct HttpJsonResp {
     pub json: heapless::Vec<i32, 16>,
 }
 
-const SSID: Option<&str> = option_env!("SSID");
-const PASSWORD: Option<&str> = option_env!("PASSWORD");
+const SSID: &str = env!("SSID");
+const PASSWORD: &str = env!("PASSWORD");
 
-const DEFAULT_SSID: &str = "1234";
-const DEFAULT_PASSWORD: &str = "1234";
-
-const SITE_IP_ADDR: Option<&str> = option_env!("SITE_IP");
-const SITE_PORT: Option<&str> = option_env!("SITE_PORT");
-const DEFAULT_SITE_IP_ADDR: &str = "192.168.0.1";
-const DEFAULT_SITE_PORT: &str = "5000";
+const SITE_IP_ADDR: &str = env!("SITE_IP");
+const SITE_PORT: &str = env!("SITE_PORT");
 
 fn http_get_payload() -> heapless::String<128> {
     // "GET / HTTP/1.1\r\nHost: 192.168.0.147:5000\r\nAccept: application/json\r\n\r\n";
     let mut get = heapless::String::<128>::from("GET / HTTP/1.1\r\nHost: ");
-    get.push_str(SITE_IP_ADDR.or(Some(DEFAULT_SITE_IP_ADDR)).unwrap())
-        .unwrap();
+    get.push_str(SITE_IP_ADDR).unwrap();
     get.push_str(":").unwrap();
-    get.push_str(&heapless::String::<8>::from(
-        SITE_PORT.or(Some(DEFAULT_SITE_PORT)).unwrap(),
-    ))
-    .unwrap();
+    get.push_str(&heapless::String::<8>::from(SITE_PORT))
+        .unwrap();
     get.push_str("\r\nAccept: application/json\r\n\r\n")
         .unwrap();
     get
@@ -64,10 +56,7 @@ mod at_commands {
 
     use at_commands::builder::CommandBuilder;
 
-    use super::{
-        DEFAULT_PASSWORD, DEFAULT_SITE_IP_ADDR, DEFAULT_SITE_PORT, DEFAULT_SSID, PASSWORD,
-        SITE_IP_ADDR, SITE_PORT, SSID,
-    };
+    use super::{PASSWORD, SITE_IP_ADDR, SITE_PORT, SSID};
 
     pub const AT_LINE_ENDING: &str = "\r\n";
     pub const AT_PREFIX: &str = "AT";
@@ -86,8 +75,8 @@ mod at_commands {
     pub fn set_wifi_ap(buf: &mut [u8]) -> Result<&[u8], usize> {
         CommandBuilder::create_set(buf, false)
             .named("+CWJAP")
-            .with_string_parameter(SSID.or(Some(DEFAULT_SSID)).unwrap())
-            .with_string_parameter(PASSWORD.or(Some(DEFAULT_PASSWORD)).unwrap())
+            .with_string_parameter(SSID)
+            .with_string_parameter(PASSWORD)
             .finish()
     }
 
@@ -95,14 +84,8 @@ mod at_commands {
         CommandBuilder::create_set(buf, false)
             .named("+CIPSTART")
             .with_string_parameter("TCP")
-            .with_string_parameter(SITE_IP_ADDR.or(Some(DEFAULT_SITE_IP_ADDR)).unwrap())
-            .with_int_parameter(
-                SITE_PORT
-                    .or(Some(DEFAULT_SITE_PORT))
-                    .unwrap()
-                    .parse::<i32>()
-                    .unwrap(),
-            )
+            .with_string_parameter(SITE_IP_ADDR)
+            .with_int_parameter(SITE_PORT.parse::<i32>().unwrap())
             .finish()
     }
 
