@@ -13,6 +13,7 @@ use embedded_graphics::{
 };
 use esp8266::Esp8266Error;
 use longan_nano::hal::prelude::*;
+use longan_nano::lcd::Lcd;
 use longan_nano::{
     hal::{
         delay::McycleDelay,
@@ -38,6 +39,16 @@ macro_rules! UART_CONFIG {
             stopbits: longan_nano::hal::serial::StopBits::STOP1,
         }
     };
+}
+
+fn clear_screen(lcd: &mut Lcd) {
+    Rectangle::new(
+        Point::new(0, 0),
+        Size::new(lcd.size().width, lcd.size().height),
+    )
+    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    .draw(lcd)
+    .unwrap();
 }
 
 #[entry]
@@ -66,15 +77,11 @@ fn main() -> ! {
         .text_color(Rgb565::GREEN)
         .background_color(Rgb565::BLACK)
         .build();
-    let (width, height) = (lcd.size().width as i32, lcd.size().height as i32);
 
     let tx = gpioa.pa2.into_alternate_push_pull();
     let rx = gpioa.pa3.into_floating_input();
 
-    Rectangle::new(Point::new(0, 0), Size::new(width as u32, height as u32))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(&mut lcd)
-        .unwrap();
+    clear_screen(&mut lcd);
 
     let uart = Serial::new(dp.USART1, (tx, rx), UART_CONFIG!(), &mut afio, &mut rcu);
     let (tx, rx) = uart.split();
@@ -90,42 +97,100 @@ fn main() -> ! {
         &mut rcu,
     );
     let (mut tx2, _) = uart2.split();
-
+    clear_screen(&mut lcd);
     Text::new("Start setup", Point::new(10, 30), style)
         .draw(&mut lcd)
         .unwrap();
 
+    clear_screen(&mut lcd);
     tx2.write_str("Creating ESP8266\r\n").unwrap();
     let mut esp = esp8266::Esp8266::new(rx, tx, RefCell::clone(&delay), tx2);
-
+    clear_screen(&mut lcd);
     Text::new("Setup complete", Point::new(10, 30), style)
         .draw(&mut lcd)
         .unwrap();
 
-    esp.at().unwrap();
-    Text::new("Test AT complete", Point::new(10, 30), style)
+    match esp.at() {
+        Ok(_) => {
+            clear_screen(&mut lcd);
+            Text::new("Test AT complete", Point::new(10, 30), style)
+                .draw(&mut lcd)
+                .unwrap();
+        }
+        Err(_) => {
+            clear_screen(&mut lcd);
+            Text::new("Test AT Failed", Point::new(10, 30), style)
+                .draw(&mut lcd)
+                .unwrap();
+            panic!("AT failed");
+        }
+    }
+    delay.get_mut().delay_ms(100);
+    clear_screen(&mut lcd);
+    Text::new("Connecting to wifi", Point::new(10, 30), style)
         .draw(&mut lcd)
         .unwrap();
-    esp.connect_wifi().unwrap();
+    match esp.connect_wifi() {
+        Ok(_) => {
+            clear_screen(&mut lcd);
+            Text::new("WiFi OK", Point::new(10, 30), style)
+                .draw(&mut lcd)
+                .unwrap();
+        }
+        Err(_) => {
+            clear_screen(&mut lcd);
+            Text::new("WiFi Failed", Point::new(10, 30), style)
+                .draw(&mut lcd)
+                .unwrap();
+        }
+    }
 
     loop {
         match esp.get() {
             Ok(v) => {
-                let mut txt = heapless::String::<32>::from("Epoch time: \n");
+                clear_screen(&mut lcd);
+                let mut txt = heapless::String::<32>::from("CPU: ");
                 let json = v.json;
-                txt.push_str(&heapless::String::<16>::from(json)).unwrap();
+                let _cpu_usage = json[0];
+                let _cpu0_temp = json[1];
+                let _cpu1_temp = json[2];
+                let _cpu2_temp = json[3];
+                let _cpu3_temp = json[4];
+                let _package0_temp = json[5];
+                txt.push_str(&heapless::String::<16>::from(_cpu_usage))
+                    .unwrap();
+                txt.push_str("%\nCore0: ").unwrap();
+                txt.push_str(&heapless::String::<16>::from(_cpu0_temp))
+                    .unwrap();
+                txt.push_str("C").unwrap();
 
                 Text::new(&txt, Point::new(10, 30), style)
                     .draw(&mut lcd)
                     .unwrap();
             }
             Err(e) => {
-                if let Esp8266Error::GetError(v) = e {
-                    let mut s = heapless::String::<256>::from("GetError ");
-                    s.push_str(&v).unwrap();
-                    Text::new(&s, Point::new(10, 30), style)
-                        .draw(&mut lcd)
-                        .unwrap();
+                clear_screen(&mut lcd);
+                match e {
+                    Esp8266Error::Error(_) => {
+                        Text::new("Generic error", Point::new(10, 30), style)
+                            .draw(&mut lcd)
+                            .unwrap();
+                    }
+                    Esp8266Error::FmtError(_) => {
+                        Text::new("FmtError", Point::new(10, 30), style)
+                            .draw(&mut lcd)
+                            .unwrap();
+                    }
+                    Esp8266Error::GetError(_) => {
+                        Text::new("GetError", Point::new(10, 30), style)
+                            .draw(&mut lcd)
+                            .unwrap();
+                    }
+                    Esp8266Error::JsonError => {
+                        Text::new("Json Error", Point::new(10, 30), style)
+                            .draw(&mut lcd)
+                            .unwrap();
+                    }
                 }
             }
         }

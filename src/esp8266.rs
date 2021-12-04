@@ -25,7 +25,7 @@ pub struct Esp8266 {
 pub struct HttpJsonResp {
     pub code: u16,
     pub http_resp: heapless::String<8192>,
-    pub json: i32,
+    pub json: heapless::Vec<i32, 16>,
 }
 
 const SSID: Option<&str> = option_env!("SSID");
@@ -34,16 +34,21 @@ const PASSWORD: Option<&str> = option_env!("PASSWORD");
 const DEFAULT_SSID: &str = "1234";
 const DEFAULT_PASSWORD: &str = "1234";
 
-const SITE_IP_ADDR: &str = "192.168.0.147";
-const SITE_PORT: u16 = 5000;
+const SITE_IP_ADDR: Option<&str> = option_env!("SITE_IP");
+const SITE_PORT: Option<&str> = option_env!("SITE_PORT");
+const DEFAULT_SITE_IP_ADDR: &str = "192.168.0.1";
+const DEFAULT_SITE_PORT: &str = "5000";
 
 fn http_get_payload() -> heapless::String<128> {
     // "GET / HTTP/1.1\r\nHost: 192.168.0.147:5000\r\nAccept: application/json\r\n\r\n";
     let mut get = heapless::String::<128>::from("GET / HTTP/1.1\r\nHost: ");
-    get.push_str(SITE_IP_ADDR).unwrap();
-    get.push_str(":").unwrap();
-    get.push_str(&heapless::String::<8>::from(SITE_PORT))
+    get.push_str(SITE_IP_ADDR.or(Some(DEFAULT_SITE_IP_ADDR)).unwrap())
         .unwrap();
+    get.push_str(":").unwrap();
+    get.push_str(&heapless::String::<8>::from(
+        SITE_PORT.or(Some(DEFAULT_SITE_PORT)).unwrap(),
+    ))
+    .unwrap();
     get.push_str("\r\nAccept: application/json\r\n\r\n")
         .unwrap();
     get
@@ -59,7 +64,10 @@ mod at_commands {
 
     use at_commands::builder::CommandBuilder;
 
-    use super::{DEFAULT_PASSWORD, DEFAULT_SSID, PASSWORD, SITE_IP_ADDR, SITE_PORT, SSID};
+    use super::{
+        DEFAULT_PASSWORD, DEFAULT_SITE_IP_ADDR, DEFAULT_SITE_PORT, DEFAULT_SSID, PASSWORD,
+        SITE_IP_ADDR, SITE_PORT, SSID,
+    };
 
     pub const AT_LINE_ENDING: &str = "\r\n";
     pub const AT_PREFIX: &str = "AT";
@@ -87,8 +95,14 @@ mod at_commands {
         CommandBuilder::create_set(buf, false)
             .named("+CIPSTART")
             .with_string_parameter("TCP")
-            .with_string_parameter(SITE_IP_ADDR)
-            .with_int_parameter(SITE_PORT)
+            .with_string_parameter(SITE_IP_ADDR.or(Some(DEFAULT_SITE_IP_ADDR)).unwrap())
+            .with_int_parameter(
+                SITE_PORT
+                    .or(Some(DEFAULT_SITE_PORT))
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap(),
+            )
             .finish()
     }
 
@@ -323,14 +337,23 @@ impl Esp8266 {
         let json_start = http_resp.find("\r\n\r\n").unwrap() + 4;
         let json_content = &http_resp[json_start..];
         let json_content = json_content.trim_end_matches('\n').trim_end_matches('\r');
-        let json = json_content
-            .parse::<i32>()
-            .map_err(|_| Esp8266Error::JsonError)?;
+        let is_array = json_content.starts_with('[') && json_content.ends_with(']');
+        match is_array {
+            true => {
+                let mut values = heapless::Vec::<i32, 16>::new();
+                let array_content = &json_content[1..json_content.len() - 2];
 
-        Ok(HttpJsonResp {
-            code: http_resp_code,
-            http_resp,
-            json,
-        })
+                for item in array_content.split(',') {
+                    let value = item.parse::<i32>().map_err(|_| Esp8266Error::JsonError)?;
+                    values.push(value).unwrap();
+                }
+                Ok(HttpJsonResp {
+                    code: http_resp_code,
+                    http_resp,
+                    json: values,
+                })
+            }
+            false => Err(Esp8266Error::JsonError),
+        }
     }
 }
