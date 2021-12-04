@@ -39,3 +39,6 @@ First you will need requirements: `pip install -r requirements.txt`
 
 And then you can run it with `python3 api.py`
 
+## Demo
+
+![demo](doc/demo.gif)
